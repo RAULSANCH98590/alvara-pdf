@@ -1,7 +1,8 @@
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, Response
 import fitz  # PyMuPDF
 import io
 from datetime import date
+import traceback
 
 app = Flask(__name__)
 
@@ -11,65 +12,97 @@ def index():
 
 @app.route('/gerar', methods=['POST'])
 def gerar():
-    print("📨 Recebi o formulário!")  # Log
+    try:
+        print("📨 Recebi o formulário!")  # Log no terminal
 
-    # --- Dados vindos do formulário ---
-    dados = {
-        "credor": request.form['credor'],
-        "cpf": request.form['cpf'],
-        "advogado": request.form['advogado'],
-        "processo": request.form['processo'],
-        "valor": request.form['valor'],
-        "cumprimento": request.form['cumprimento'],
-        "data": date.today().strftime("%d/%m/%Y")
-    }
+        # --- Dados vindos do formulário ---
+        dados = {
+            "credor": request.form.get('credor', ''),
+            "cpf": request.form.get('cpf', ''),
+            "advogado": request.form.get('advogado', ''),
+            "processo": request.form.get('processo', ''),
+            "valor": request.form.get('valor', ''),
+            "cumprimento": request.form.get('cumprimento', ''),
+            "data": date.today().strftime("%d/%m/%Y")
+        }
 
-    # --- Campos fixos (não vêm do formulário) ---
-    assunto_fixo = "Decisão Favorável"
-    situacao_fixa = "AUTORIZADO"
+        # --- Campos fixos ---
+        assunto_fixo = "Decisão Favorável"
+        situacao_fixa = "AUTORIZADO"
 
-    # --- Abre o PDF modelo ---
-    modelo = "Alvara_Liberacao_Base1.pdf"
-    pdf = fitz.open(modelo)
-    page = pdf[0]
+        # --- Abre o PDF modelo ---
+        modelo = "Alvara_Liberacao_Base1.pdf"
+        doc = fitz.open(modelo)
+        page = doc[0]
 
-    # --- Coordenadas dos campos ---
-    campos = {
-        "credor": (120, 173),
-        "cpf": (143, 187),
-        "advogado": (150, 202),
-        "processo": (145, 245),
-        "valor": (163, 429),
-        "cumprimento": (313, 300),
-        "assunto": (120, 329),  # posição após o rótulo “Assunto:”
-        "situacao": (123, 344),  # posição após o rótulo “Situação:”
-        "data": (110, 610)
-    }
+        # --- Coordenadas dos campos ---
+        campos = {
+            "credor": (117, 270),
+            "cpf": (138, 284),
+            "advogado": (150, 298),
+            "processo": (146, 325),
+            "valor": (173, 522),
+            "cumprimento": (264, 383),
+            "assunto": (127, 425),
+            "situacao": (130, 440),
+            "data": (95, 610)
+        }
 
-    # --- Inserção dos textos ---
-    page.insert_text(campos["credor"], f"{dados['credor']}", fontsize=11)
-    page.insert_text(campos["cpf"], f"{dados['cpf']}", fontsize=11)
-    page.insert_text(campos["advogado"], f"{dados['advogado']}", fontsize=11)
-    page.insert_text(campos["processo"], f"{dados['processo']}", fontsize=11)
-    page.insert_text(campos["valor"], f"R$ {dados['valor']}", fontsize=11)
-    page.insert_text(campos["cumprimento"], f"{dados['cumprimento']}", fontsize=11)
+        # --- Função auxiliar para escrever com fallback de fonte/negrito ---
+        def escrever(pos, texto, fontsize=11, bold=False):
+            x, y = pos
+            # tenta primeiro usar fonte padrão bold se bold=True
+            try:
+                if bold:
+                    # Times-Bold é geralmente suportada
+                    page.insert_text((x, y), texto, fontsize=fontsize, fontname="Times-Bold")
+                else:
+                    page.insert_text((x, y), texto, fontsize=fontsize, fontname="Times-Roman")
+                return
+            except Exception:
+                # fallback: tentar render_mode que aumenta espessura do traço
+                try:
+                    if bold:
+                        page.insert_text((x, y), texto, fontsize=fontsize, render_mode=2)
+                    else:
+                        page.insert_text((x, y), texto, fontsize=fontsize)
+                    return
+                except Exception:
+                    # último recurso: inserir sem opções
+                    page.insert_text((x, y), texto, fontsize=fontsize)
 
-    # --- Campos fixos: imprimem apenas os valores ---
-    page.insert_text(campos["assunto"], f"{assunto_fixo}", fontsize=11)
-    page.insert_text(campos["situacao"], f"{situacao_fixa}", fontsize=11)
+        # --- Inserção dos textos ---
+        escrever(campos["credor"], dados["credor"])
+        escrever(campos["cpf"], dados["cpf"])
+        escrever(campos["advogado"], dados["advogado"])
+        escrever(campos["processo"], dados["processo"])
+        escrever(campos["valor"], dados["valor"], bold=True)  # valor em negrito (fallback incluso)
+        escrever(campos["cumprimento"], dados["cumprimento"])
 
-    # --- Data ---
-    page.insert_text(campos["data"], f"{dados['data']}", fontsize=11)
+        # --- Campos fixos (apenas valores, pois o template já tem os rótulos) ---
+        escrever(campos["assunto"], assunto_fixo)
+        escrever(campos["situacao"], situacao_fixa)
 
-    # --- Salva o novo PDF ---
-    output = io.BytesIO()
-    pdf.save(output)
-    output.seek(0)
-    pdf.close()
+        # --- Data ---
+        escrever(campos["data"], dados["data"], fontsize=11)
 
-    nome_arquivo = f"Alvara_Liberacao_{dados['credor'].replace(' ', '_')}.pdf"
-    return send_file(output, as_attachment=True, download_name=nome_arquivo, mimetype='application/pdf')
+        # --- Salva o novo PDF ---
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
+        doc.close()
 
+        nome_arquivo = f"Alvara_Liberacao_{dados['credor'].replace(' ', '_')}.pdf"
+        return send_file(output, as_attachment=True, download_name=nome_arquivo, mimetype='application/pdf')
+
+    except Exception as e:
+        # imprime o traceback completo no terminal para diagnosticarmos
+        tb = traceback.format_exc()
+        print("===== ERRO NA GERAÇÃO DO PDF =====")
+        print(tb)
+        print("==================================")
+        # retorna erro simples ao navegador (você verá também no terminal)
+        return Response("Erro ao gerar PDF. Verifique o terminal para detalhes.", status=500)
 
 if __name__ == '__main__':
     app.run(debug=True)
