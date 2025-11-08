@@ -1,0 +1,1 @@
+web: gunicorn gerar_alvara:app
